@@ -259,6 +259,7 @@ def check_suspend_six_month(df_payload: pd.DataFrame, requester: APIRequester) -
         pd.DataFrame: The updated DataFrame with suspension reasons and dates for symbols suspended for more
     """
     df_suspend_six_month = prepare_df_suspend_six_month(requester)
+    df_suspend_six_month['Kode'] = df_suspend_six_month['Kode'].apply(lambda x: x + '.JK')
     suspend_dict = df_suspend_six_month.set_index('Kode')['Tanggal Suspensi'].to_dict()
     LOGGER.info(f"Check data suspend six month: \n{df_suspend_six_month.head(2)}")
 

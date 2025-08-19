@@ -7,8 +7,8 @@ This repo is a Python-based scraper designed to automatically fetch, process, an
 ### 1. Clone the Repository
 
 ```bash
-git clone )
-cd repo
+git clone https://github.com/supertypeai/sectors_idx_suspension.git
+cd repo sectors_idx_suspension
 ```
 
 ### 2. Set Up a Virtual Environment

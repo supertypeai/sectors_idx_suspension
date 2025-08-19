@@ -37,14 +37,13 @@ SUPABASE_KEY="SUPABASE_API_KEY"
 python pipeline.py <start_date> <end_date>
 ```
 
-## idx_suspension
+## idx_suspension payload
 
 This table stores the structured suspension data scraped by the script.
 
-| Column          | Type        | Description                                                   |
-|-----------------|-------------|---------------------------------------------------------------|
-| symbol          | text        | Foreign Key to `idx_company_profile.symbol`.                  |
-| suspension_date | date        | The date the suspension was announced.                        |
-| reason          | text        | The reason for the suspension, extracted from the PDF.        |
-| pdf_url         | text        | The direct URL to the official announcement PDF.              |
-| created_at      | timestampz  | Timestamp of when the record was created (default: `now()`).  |
+| Column          | Type | Description                                          |
+|-----------------|------|------------------------------------------------------|
+| symbol          | text | Foreign Key to `idx_company_profile.symbol`.         |
+| suspension_date | date | The date the suspension was announced.               |
+| reason          | text | The reason for the suspension, extracted from the PDF. |
+| pdf_url         | text | The direct URL to the official announcement PDF.     |

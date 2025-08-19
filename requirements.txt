@@ -1,0 +1,9 @@
+python-dotenv
+PyMuPDF
+requests
+beautifulsoup4
+selenium
+webdriver-manager
+pandas
+openpyxl
+supabase

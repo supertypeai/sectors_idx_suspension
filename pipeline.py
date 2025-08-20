@@ -1,14 +1,12 @@
 from supabase import create_client
 from datetime import datetime, timedelta
 
-from setup import LOGGER, SUPABASE_KEY, SUPABASE_URL
-from scraper_engine.api_requester import APIRequester
-from scraper_engine.idx_suspension_scraper import run_get_idx_suspension
+from setup                                  import LOGGER, SUPABASE_KEY, SUPABASE_URL
+from scraper_engine.api_requester           import APIRequester
+from scraper_engine.idx_suspension_scraper  import run_get_idx_suspension
 
 import pandas as pd 
 import argparse
-
-from setup import LOGGER
 
 
 def get_company_profile_symbol(supabase_client: create_client) -> list[str]:

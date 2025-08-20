@@ -1,6 +1,6 @@
 from datetime   import datetime 
 
-from setup import LOGGER
+from setup          import LOGGER
 from .api_requester import APIRequester
 
 import pandas as pd

@@ -339,6 +339,33 @@ def parse_mixed_date(date_str: str) -> str | None:
         return None
 
 
+def process_incomplete_data(df_missing: pd.DataFrame, file_name: str):
+    """ 
+    Processes and saves incomplete data to a CSV file, handling duplicates.
+
+    Args:
+        df_missing (pd.DataFrame): The DataFrame containing missing data.
+        file_name (str): The name of the CSV file to save the missing data.
+    """
+    if os.path.exists(file_name):
+        try:
+            existing_missing = pd.read_csv(file_name)
+            # Combine existing and new missing data
+            combined_missing = pd.concat([existing_missing, df_missing], ignore_index=True)
+            # Remove duplicate
+            combined_missing = combined_missing.drop_duplicates(subset=['symbol', 'pdf_url'])
+            
+            combined_missing.to_csv(file_name, index=False)
+            new_rows = len(combined_missing) - len(existing_missing)
+            LOGGER.info(f"Added {new_rows} new missing data rows (total: {len(combined_missing)} rows)")
+        except Exception as error:
+            LOGGER.warning(f"Could not read existing missing data file: {error} Appending new dataa")
+    else:
+        # File doesn't exist, create new one
+        df_missing.to_csv(file_name, index=False)
+        LOGGER.info(f"Missing data saved to {file_name} with {len(df_missing)} rows")
+
+
 def clean_dataframe_payload(df: pd.DataFrame) -> pd.DataFrame:
     """ 
     Cleans the DataFrame by removing rows with missing values and parsing dates. 
@@ -355,6 +382,10 @@ def clean_dataframe_payload(df: pd.DataFrame) -> pd.DataFrame:
     df_missing = df[df.isnull().any(axis=1)] 
     file_name = "data_incomplete/idx_suspension_missing_data.csv"
     
+    # Process missing data with proper handle duplicate
+    if len(df_missing) > 0:
+        process_incomplete_data(df_missing, file_name)
+
     # Only write headers if file doesn't exist
     write_header = not os.path.exists(file_name)
     df_missing.to_csv(file_name, mode="a", header=write_header, index=False)

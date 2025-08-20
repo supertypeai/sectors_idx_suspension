@@ -48,11 +48,11 @@ def upsert_to_db(df_payload: pd.DataFrame, supabase_client: create_client):
         
         LOGGER.info(f"Check payload to upsert: \n{payload_list}")
 
-        # supabase_client.table("idx_suspension").upsert(
-        #     payload_list
-        # ).execute()
+        supabase_client.table("idx_suspension").upsert(
+            payload_list
+        ).execute()
 
-        # LOGGER.info(f"Successfully upserted {len(payload_list)} data to database")
+        LOGGER.info(f"Successfully upserted {len(payload_list)} data to database")
     except Exception as error:
         raise Exception(f"Error upserting to database: {error}")
 

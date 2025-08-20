@@ -333,8 +333,11 @@ def clean_dataframe_payload(df: pd.DataFrame) -> pd.DataFrame:
     os.makedirs('data_incomplete', exist_ok=True)
 
     df_missing = df[df.isnull().any(axis=1)] 
-    file_name = "idx_suspension_missing_data.csv"
-    df_missing.to_csv(file_name, mode="a", header=False, index=False)
+    file_name = "data_incomplete/idx_suspension_missing_data.csv"
+    
+    # Only write headers if file doesn't exist
+    write_header = not os.path.exists(file_name)
+    df_missing.to_csv(file_name, mode="a", header=write_header, index=False)
     LOGGER.info(f"Missing data saved to data_incomplete/idx_suspension_missing_data.csv with {len(df_missing)} rows")
 
     df_clean = df.dropna(subset=['suspension_date', 'reason']).copy()

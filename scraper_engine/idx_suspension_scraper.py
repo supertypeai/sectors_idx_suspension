@@ -1,7 +1,7 @@
 from datetime   import datetime 
 
 from setup import LOGGER
-from api_requester import APIRequester
+from .api_requester import APIRequester
 
 import pandas as pd
 import json  

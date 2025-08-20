@@ -435,7 +435,7 @@ def run_get_idx_suspension(allowed_symbols: list[str], requester: APIRequester) 
     
     df_payload = pd.DataFrame(final_payload)
     # Check dataframe suspend six month
-    df_payload = check_suspend_six_month(df_payload)
+    df_payload = check_suspend_six_month(df_payload, requester)
 
     check_payload = df_payload.to_json(orient="records")
     LOGGER.info(check_payload)

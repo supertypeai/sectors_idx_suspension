@@ -28,7 +28,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Run scraping script for all news source
+      - name: Run scraping idx suspension
         run: python pipeline.py 
 
       - name: Pull changes

@@ -132,7 +132,8 @@ def get_reason(full_pdf_doc: str, symbol: str) -> str | None:
             "Dalam rangka pengalihan saham hasil pelaksanaan pembelian kembali saham (buyback) dalam rangka delisting perseroan",
         
         "belum menyampaikan laporan keuangan interim per 31 maret 2025":
-            "Belum menyampaikan laporan keuangan interim per 31 maret 2025 dan/atau belum melakukan pembayaran denda atas keterlambatan penyampaian laporan keuangan tersebut",
+            "Belum menyampaikan laporan keuangan interim per 31 maret 2025 dan/atau belum melakukan pembayaran denda atas "
+            "keterlambatan penyampaian laporan keuangan tersebut",
         
         "belum memenuhi ketentuan v.1.1.":
             "Belum memenuhi ketentuan V.1.1. dan/atau V.1.2. peraturan bursa nomor I-A",
@@ -144,7 +145,23 @@ def get_reason(full_pdf_doc: str, symbol: str) -> str | None:
             "Bursa menilai bahwa terdapat keraguan atas kelangsungan usaha perseroan",
         
         "adanya ketidakpastian atas kelangsungan usaha":
-            "Sehubungan dengan adanya ketidakpastian atas kelangsungan usaha"
+            "Sehubungan dengan adanya ketidakpastian atas kelangsungan usaha",
+        
+        "perseroan akan melakukan tindakan korporasi berupa penggabungan usaha":
+            "Perseroan akan melakukan tindakan korporasi berupa penggabungan usaha yang akan mengakibatkan saham Perseroan "
+            "menjadi tidak tercatat di Bursa",
+        
+        "terdapat rencana perubahan status perseroan dari perusahaan terbuka menjadi perusahaan tertutup":
+            "Terdapat rencana perubahan status Perseroan dari Perusahaan Terbuka menjadi Perusahaan Tertutup (Go Private) "
+            "dan rencana voluntary delisting saham Perseroan di Bursa Efek Indonesia.",
+        
+        "menunda pembayaran amortisasi pokok ke-12 dan bunga ke-24 dari obligasi i kapuas prima coal":
+            "Perseroan telah menunda pembayaran amortisasi pokok ke-12 dan bunga ke-24 dari Obligasi I Kapuas Prima Coal Tahun 2018 (ZINC01E) "
+            "yang seharusnya efektif dibayarkan pada tanggal 13 Februari 2025",
+        
+        "menunda pembayaran pokok sukuk mudharabah berkelanjutan":
+            "Perseroan telah menunda pembayaran pokok Sukuk Mudharabah Berkelanjutan II Wijaya Karya Tahap II  Tahun 2022 Seri A (SMWIKA02ACN2) "
+            "dan Obligasi Berkelanjutan II Wijaya Karya Tahap II Tahun 2022 Seri A (WIKA02ACN2)"
     }
     
     # Special case Combined conditions

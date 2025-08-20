@@ -59,7 +59,9 @@ class APIRequester:
         Returns:
             fitz.Document: The PDF document object containing the content of the PDF file.
         """
+        pdf_url = pdf_url.strip()
         full_url = self.root_url + pdf_url
+
         try:
             with urllib.request.urlopen(full_url) as response:
                 file_content = response.read()
@@ -74,7 +76,6 @@ class APIRequester:
         except Exception as e:
             print(f"Unexpected error processing URL {full_url}: {type(e).__name__}: {str(e)}")
             raise
-
 
     def get_xlsx_url_proxy(self) -> str | None:
         """ 

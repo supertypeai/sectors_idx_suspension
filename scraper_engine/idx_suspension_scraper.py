@@ -141,7 +141,10 @@ def get_reason(full_pdf_doc: str, symbol: str) -> str | None:
             "Keterlambatan pembayaran biaya pencatatan tahunan 2025",
         
         "terdapat keraguan atas kelangsungan usaha perseroan":
-            "Bursa menilai bahwa terdapat keraguan atas kelangsungan usaha perseroan"
+            "Bursa menilai bahwa terdapat keraguan atas kelangsungan usaha perseroan",
+        
+        "adanya ketidakpastian atas kelangsungan usaha":
+            "Sehubungan dengan adanya ketidakpastian atas kelangsungan usaha"
     }
     
     # Special case Combined conditions

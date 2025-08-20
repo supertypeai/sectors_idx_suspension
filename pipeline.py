@@ -40,7 +40,6 @@ def upsert_to_db(df_payload: pd.DataFrame, supabase_client: create_client):
         supabase_client (create_client): The Supabase client instance.
     """
     try:
-        df_payload = df_payload.head(1)
         payload_list = df_payload.to_dict(orient="records")
         if not payload_list:
             LOGGER.warning("No data to upsert. Exiting.")
@@ -76,4 +75,4 @@ if __name__ == '__main__':
     upsert_to_db(df_payload, supabase_client)
 
     # Example Run
-    # python idx_suspension/suspension.py 20250801 20250807 
+    # python idx_suspension/suspension.py --start_date 20250801 --end_date 20250807 

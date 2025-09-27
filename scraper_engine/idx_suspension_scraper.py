@@ -488,17 +488,19 @@ def run_get_idx_suspension(allowed_symbols: list[str], requester: APIRequester) 
     LOGGER.info(f"Successfully processed and found dates for {len(final_payload)} items.")
     
     if not final_payload:
-        df_payload = pd.DataFrame(final_payload)
-        # Check dataframe suspend six month
-        df_payload = check_suspend_six_month(df_payload, requester)
+        LOGGER.info(f"final payload is empty: {final_payload}, terminating the rest process")
+        return final_payload
 
-        check_payload = df_payload.to_json(orient="records")
-        LOGGER.info(check_payload)
+    df_payload = pd.DataFrame(final_payload)
+    # Check dataframe suspend six month
+    df_payload = check_suspend_six_month(df_payload, requester)
 
-        # Drop missing values and saved dataframe that has missing values as csv
-        df_final_payload = clean_dataframe_payload(df_payload)
-        
-        return df_final_payload 
+    check_payload = df_payload.to_json(orient="records")
+    LOGGER.info(check_payload)
+
+    # Drop missing values and saved dataframe that has missing values as csv
+    df_final_payload = clean_dataframe_payload(df_payload)
     
-    LOGGER.info(f"final payload is empty: {final_payload}, terminating the rest process")
-    return final_payload
+    return df_final_payload 
+    
+   

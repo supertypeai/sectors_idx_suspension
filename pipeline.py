@@ -29,7 +29,7 @@ def get_company_profile_symbol(supabase_client: create_client) -> list[str]:
         return {}
 
 
-def upsert_to_db(df_payload: pd.DataFrame | list, supabase_client: create_client):
+def upsert_to_db(df_payload: pd.DataFrame | list[dict[str]], supabase_client: create_client):
     """
     Upserts the provided DataFrame to the Supabase database.
     
@@ -38,8 +38,12 @@ def upsert_to_db(df_payload: pd.DataFrame | list, supabase_client: create_client
         supabase_client (create_client): The Supabase client instance.
     """
     try:
-        if not df_payload:
+        if isinstance(df_payload, list):
             LOGGER.warning("No data to upsert. Exiting.")
+            return
+        
+        if df_payload.empty:
+            LOGGER.info("DataFrame is empty after cleaning. Skipping upsert.")
             return
         
         payload_list = df_payload.to_dict(orient="records")

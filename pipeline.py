@@ -50,11 +50,23 @@ def upsert_to_db(df_payload: pd.DataFrame | list[dict[str]], supabase_client: cr
         
         LOGGER.info(f"Check payload to upsert: \n{payload_list}")
 
-        supabase_client.table("idx_suspension").upsert(
-            payload_list
-        ).execute()
+        response = (
+            supabase_client
+            .table("idx_suspension")
+            .upsert(
+                payload_list, 
+                on_conflict='symbol'
+            )
+            .execute()
+        )
 
-        LOGGER.info(f"Successfully upserted {len(payload_list)} data to database")
+        if hasattr(response, 'data') and response.data is not None:
+            LOGGER.info(f"Successfully upserted {len(payload_list)} records to database")
+        
+        else:
+            LOGGER.error(f"Upsert returned unexpected response: {response}")
+            raise RuntimeError(f"Upsert failed with response: {response}")
+
     except Exception as error:
         raise Exception(f"Error upserting to database: {error}")
 
@@ -70,11 +82,14 @@ if __name__ == '__main__':
 
     args = parser.parse_args()
     
+    LOGGER.info(f'Running start date: {args.start_date} | end date: {args.end_date}')
     requester = APIRequester(start_date=args.start_date, end_date=args.end_date)
     
     supabase_client = create_client(SUPABASE_URL, SUPABASE_KEY)
+
     allowed_symbols = get_company_profile_symbol(supabase_client)
     df_payload = run_get_idx_suspension(allowed_symbols, requester)
+    
     upsert_to_db(df_payload, supabase_client)
 
     # Example Run

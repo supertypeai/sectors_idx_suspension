@@ -21,6 +21,7 @@ def prepare_df_suspend_six_month(requester: APIRequester) -> pd.DataFrame:
     """
     df = requester.fetch_xlsx_file() 
     df = df[['Kode', "Tanggal Suspensi"]].copy()
+    df['Tanggal Suspensi'] = pd.to_datetime(df['Tanggal Suspensi']).dt.strftime('%Y-%m-%d')
     return df 
 
 
@@ -281,12 +282,16 @@ def check_suspend_six_month(df_payload: pd.DataFrame, requester: APIRequester) -
     df_suspend_six_month = prepare_df_suspend_six_month(requester)
     df_suspend_six_month['Kode'] = df_suspend_six_month['Kode'].apply(lambda x: x + '.JK')
     suspend_dict = df_suspend_six_month.set_index('Kode')['Tanggal Suspensi'].to_dict()
+
     LOGGER.info(f"Check data suspend six month: \n{df_suspend_six_month.head(2)}")
 
     mask = df_payload['symbol'].isin(df_suspend_six_month['Kode'])
+
     LOGGER.info(f"Matched count suspend six month: {mask.sum()}")
+
     df_payload.loc[mask, 'reason'] = "Suspend more than 6 month"
     df_payload.loc[mask, 'suspension_date'] = df_payload.loc[mask, 'symbol'].map(suspend_dict)
+
     return df_payload
 
 

@@ -2,8 +2,17 @@ name: Scrape IDX Suspension and Submit to Database
 
 on:
   schedule:
-    - cron: "0 3 * * *" # Runs at 10:00 AM UTC+7 every day
+    - cron: "0 3 * * *"
   workflow_dispatch:
+    inputs:
+      start_date:
+        description: 'Start date in YYYYMMDD format (e.g., 20260408)'
+        required: false
+        default: ''
+      end_date:
+        description: 'End date in YYYYMMDD format (e.g., 20260408)'
+        required: false
+        default: ''
 
 jobs:
   run_scraper_and_submit:
@@ -29,7 +38,12 @@ jobs:
           pip install -r requirements.txt
 
       - name: Run scraping idx suspension
-        run: python pipeline.py
+        run: |
+          if [ -n "${{ github.event.inputs.start_date }}" ] && [ -n "${{ github.event.inputs.end_date }}" ]; then
+            python pipeline.py --start_date ${{ github.event.inputs.start_date }} --end_date ${{ github.event.inputs.end_date }}
+          else
+            python pipeline.py
+          fi
 
       - name: Pull changes
         run: git pull origin main

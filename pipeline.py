@@ -55,7 +55,7 @@ def upsert_to_db(df_payload: pd.DataFrame | list[dict[str]], supabase_client: cr
             .table("idx_suspension")
             .upsert(
                 payload_list, 
-                on_conflict='symbol'
+                on_conflict='symbol,suspension_date'
             )
             .execute()
         )

@@ -2,10 +2,9 @@ from io         import BytesIO
 from bs4        import BeautifulSoup
 
 from setup import PROXY, LOGGER
+from idx_fetch import idx_get
 
 import pandas as pd 
-import ssl
-import urllib.request 
 import fitz 
 import time
 
@@ -19,11 +18,7 @@ class APIRequester:
             proxy (str, optional): the proxy to be used. Defaults to None. Example: 'brd-customer-xxx-zone-xxx:xxx@brd.superproxy.io:xxx'
         """
         # Set up SSL context to unverified
-        ssl._create_default_https_context = ssl._create_unverified_context
-
-        proxy_support = urllib.request.ProxyHandler({'http': proxy,'https': proxy})
-        opener = urllib.request.build_opener(proxy_support)
-        urllib.request.install_opener(opener)
+        self.proxies = {"http": proxy, "https": proxy} if proxy else None
         
         # Setup api url
         self.root_url ='https://www.idx.co.id'
@@ -43,8 +38,7 @@ class APIRequester:
         """
         # Use the installed opener to fetch the URL
         try:
-            with urllib.request.urlopen(url if url else self.api_url) as response:
-                return response.read().decode()
+            return idx_get(url if url else self.api_url, kind="json", proxies=self.proxies).decode()
         except Exception as error:
             print(f"Error fetching URL: {error}")
             return False
@@ -63,8 +57,7 @@ class APIRequester:
         full_url = self.root_url + pdf_url
 
         try:
-            with urllib.request.urlopen(full_url) as response:
-                file_content = response.read()
+            file_content = idx_get(full_url, kind="raw", proxies=self.proxies)
         
             pdf_text = fitz.open(stream=file_content, filetype="pdf")
             return pdf_text
@@ -88,14 +81,8 @@ class APIRequester:
             str | None: The URL of the XLSX file if found, None if not found.
         """
         try:
-            ctx = ssl._create_unverified_context()
-            proxy_support = urllib.request.ProxyHandler({'http': PROXY,'https': PROXY})
-            opener = urllib.request.build_opener(proxy_support, urllib.request.HTTPSHandler(context=ctx))
-            urllib.request.install_opener(opener)
-
-            with urllib.request.urlopen(self.api_url_suspend_more_six_month) as response:
-                data = response.read()
-                data = data.decode('utf-8')
+            data = idx_get(self.api_url_suspend_more_six_month, kind="raw",
+                           proxies=self.proxies).decode('utf-8')
 
             soup = BeautifulSoup(data, 'html.parser')
             link_tag = soup.find("a", href=lambda href: href and href.endswith(".xlsx"))
@@ -131,8 +118,7 @@ class APIRequester:
             try:
                 LOGGER.info('Downloading xlsx file')
                 # Download file as binary
-                with urllib.request.urlopen(xlsx_url, timeout=timeout) as response:
-                    file_bytes= response.read()
+                file_bytes = idx_get(xlsx_url, kind="raw", proxies=self.proxies, timeout=(10, timeout))
 
                 df = pd.read_excel(BytesIO(file_bytes))
                 return df

@@ -1,6 +1,7 @@
 python-dotenv
 PyMuPDF
 requests
+curl_cffi==0.15.0
 beautifulsoup4
 selenium
 webdriver-manager

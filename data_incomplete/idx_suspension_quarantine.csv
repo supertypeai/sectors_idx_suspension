@@ -1,3 +1,4 @@
 symbol,announcement_date,pdf_url,verdict,detail,evidence
 CNTX.JK,2024-08-07,,DATE_LATE,halt date 2024-08-07 but last traded 2024-08-01,"prev session 2024-08-06, volume 0 on 2024-08-07"
 WSBP.JK,2026-09-28,,DATE_LATE,halt date 2026-09-28 but last traded 2026-06-30,"prev session 2026-09-25, volume 0 on 2026-09-28"
+ADHI,2026-11-24,https://www.idx.co.id/StaticData/NewsAndAnnouncement/ANNOUNCEMENTSTOCK/From_EREP/202611/20261124_ADHI_B007_82ce797e-9e1b-4013-a309-6a9259ba5e8a_lamp1-20261124121828.pdf,NO_DATE,no_date,

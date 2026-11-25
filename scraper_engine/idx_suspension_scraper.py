@@ -2,11 +2,39 @@ from datetime   import datetime
 
 from setup          import LOGGER
 from .api_requester import APIRequester
+from .extract       import (extract_announcement, parse_effective_date, parse_mass_list,
+                            parse_reason)
 
 import pandas as pd
 import json  
 import re 
 import os 
+
+QUARANTINE_FILE = "data_incomplete/idx_suspension_quarantine.csv"
+
+
+QUARANTINE_LIMIT = 3000
+
+
+def write_quarantine(records: list[dict]) -> None:
+    """Record skipped announcements with the verdict that explains the skip.
+
+    Deduplicated against what is already on disk and capped, so a daily job that
+    keeps hitting the same unparsable announcement does not grow the file without
+    bound.
+    """
+    if not records:
+        return
+    os.makedirs('data_incomplete', exist_ok=True)
+    frame = pd.DataFrame(records)
+    if os.path.exists(QUARANTINE_FILE):
+        existing = pd.read_csv(QUARANTINE_FILE, dtype=str).fillna('')
+        frame = pd.concat([existing, frame.astype(str)], ignore_index=True)
+    keys = ['symbol', 'announcement_date', 'verdict', 'pdf_url']
+    frame = frame.drop_duplicates(subset=keys, keep='last').tail(QUARANTINE_LIMIT)
+    frame.to_csv(QUARANTINE_FILE, index=False)
+    LOGGER.info(f"Quarantine: {len(records)} skipped this run, {len(frame)} tracked "
+                f"-> {QUARANTINE_FILE}")
 
 
 def prepare_df_suspend_six_month(requester: APIRequester) -> pd.DataFrame:
@@ -20,6 +48,9 @@ def prepare_df_suspend_six_month(requester: APIRequester) -> pd.DataFrame:
         pd.DataFrame: A DataFrame with columns 'Kode' and 'Tanggal Suspensi'.
     """
     df = requester.fetch_xlsx_file() 
+    if df.empty or not {'Kode', 'Tanggal Suspensi'}.issubset(df.columns):
+        LOGGER.warning("Six-month workbook unusable (empty or wrong shape), skipping override")
+        return pd.DataFrame()
     df = df[['Kode', "Tanggal Suspensi"]].copy()
     df['Tanggal Suspensi'] = pd.to_datetime(df['Tanggal Suspensi']).dt.strftime('%Y-%m-%d')
     return df 
@@ -45,227 +76,11 @@ def get_pdf_texts(requester: APIRequester, pdf_url: str) -> str:
             page = pdf_doc[page_num]
             text = page.get_text()
             full_pdf_doc+=text
-    except Exception as error:
-        LOGGER.error(f'Error getting pdf texts {error}')
-    
     finally:
         if pdf_doc:
             pdf_doc.close()
     
     return full_pdf_doc
-
-
-def get_date_from_pdf(full_pdf_doc: str) -> str | None:
-    """ 
-    Extracts the suspension date from the PDF document text based on specific patterns.
-
-    Args:
-        full_pdf_doc (str): The text content of the PDF document.
-    
-    Returns:
-        str | None: The extracted suspension date in 'YYYY-MM-DD' format, or None.
-    """
-    text = " ".join(full_pdf_doc.split())
-    date_pattern = r"(\d{1,2}\s+\w+\s+\d{4})"
-    keywords = ["suspensi", "penghentian\s+sementara"]
-
-    all_candidates = []
-
-    for kw in keywords:
-        # Only match keyword -> date within 200 chars
-        pattern_after = rf"{kw}.{{0,200}}?(?:tanggal\s+)?{date_pattern}"
-        matches = re.finditer(pattern_after, text, re.IGNORECASE)
-        for m in matches:
-            snippet = text[m.start():m.end()]
-            all_candidates.append((m.group(1), snippet.lower()))
-
-    # Try to matches that mention 'sesi ii' first
-    sesi_matches = [date for date, snippet in all_candidates if "sesi ii" in snippet]
-    if sesi_matches:
-        return sesi_matches[-1] 
-
-    # Otherwise, take the last match overall
-    if all_candidates:
-        return all_candidates[-1][0]
-
-    return None
-
-
-def get_reason(full_pdf_doc: str, symbol: str) -> str | None:
-    """
-    Extract suspension reason from PDF document text based on predefined patterns.
-    
-    Args:
-        full_pdf_doc: Raw PDF document text
-        symbol: Stock symbol for personalized messages
-        
-    Returns:
-        Formatted reason string or None if no match found
-    """
-    # Normalize spacing and lowercase for consistent matching
-    pdf_texts = " ".join(full_pdf_doc.split())
-    pdf_texts_lower = pdf_texts.lower()
-    
-    # Define reason pattern, format: {search_pattern: formatted_message_to_return}
-    reason_patterns = {
-        "peningkatan harga kumulatif yang signifikan": 
-            f"Terjadinya peningkatan harga kumulatif yang signifikan pada saham {symbol}",
-        
-        "cooling down sebagai bentuk perlindungan bagi investor":
-            "Dalam rangka cooling down sebagai bentuk perlindungan bagi investor",
-        
-        "untuk melakukan pembubaran dan likuidasi":
-            f"Berencana untuk melakukan pembubaran dan likuidasi {symbol}",
-        
-        "penurunan harga kumulatif yang signifikan":
-            f"Terjadinya penurunan harga kumulatif yang signifikan pada saham {symbol}",
-        
-        "perihal penundaan pembayaran pelunasan pokok & bunga mtn xv pp properti tahun 2022 ke-12 (ppro15xxmf)":
-            "Perihal Penundaan Pembayaran Pelunasan Pokok & Bunga MTN XV PP Properti Tahun 2022 Ke-12 (PPRO15XXMF)",
-        
-        "belum menyampaikan laporan keuangan auditan tahunan":
-            "Belum menyampaikan laporan keuangan auditan tahunan",
-        
-        "berada dalam papan pemantauan khusus selama lebih dari 1 (satu) tahun berturut-turut":
-            "Efek Perseroan telah berada dalam papan pemantauan khusus selama lebih dari 1 (satu) tahun berturut-turut",
-        
-        "pengalihan saham hasil pelaksanaan pembelian kembali saham":
-            "Dalam rangka pengalihan saham hasil pelaksanaan pembelian kembali saham (buyback) dalam rangka delisting perseroan",
-        
-        "belum menyampaikan laporan keuangan interim per 31 maret 2025":
-            "Belum menyampaikan laporan keuangan interim per 31 maret 2025 dan/atau belum melakukan pembayaran denda atas "
-            "keterlambatan penyampaian laporan keuangan tersebut",
-        
-        "belum memenuhi ketentuan v.1.1.":
-            "Belum memenuhi ketentuan V.1.1. dan/atau V.1.2. peraturan bursa nomor I-A",
-        
-        "keterlambatan pembayaran biaya pencatatan tahunan 2025":
-            "Keterlambatan pembayaran biaya pencatatan tahunan 2025",
-        
-        "terdapat keraguan atas kelangsungan usaha perseroan":
-            "Bursa menilai bahwa terdapat keraguan atas kelangsungan usaha perseroan",
-        
-        "adanya ketidakpastian atas kelangsungan usaha":
-            "Sehubungan dengan adanya ketidakpastian atas kelangsungan usaha",
-        
-        "perseroan akan melakukan tindakan korporasi berupa penggabungan usaha":
-            "Perseroan akan melakukan tindakan korporasi berupa penggabungan usaha yang akan mengakibatkan saham Perseroan "
-            "menjadi tidak tercatat di Bursa",
-        
-        "terdapat rencana perubahan status perseroan dari perusahaan terbuka menjadi perusahaan tertutup":
-            "Terdapat rencana perubahan status Perseroan dari Perusahaan Terbuka menjadi Perusahaan Tertutup (Go Private) "
-            "dan rencana voluntary delisting saham Perseroan di Bursa Efek Indonesia.",
-        
-        "menunda pembayaran amortisasi pokok ke-12 dan bunga ke-24 dari obligasi i kapuas prima coal":
-            "Perseroan telah menunda pembayaran amortisasi pokok ke-12 dan bunga ke-24 dari Obligasi I Kapuas Prima Coal Tahun 2018 (ZINC01E) "
-            "yang seharusnya efektif dibayarkan pada tanggal 13 Februari 2025",
-        
-        "menunda pembayaran pokok sukuk mudharabah berkelanjutan":
-            "Perseroan telah menunda pembayaran pokok Sukuk Mudharabah Berkelanjutan II Wijaya Karya Tahap II  Tahun 2022 Seri A (SMWIKA02ACN2) "
-            "dan Obligasi Berkelanjutan II Wijaya Karya Tahap II Tahun 2022 Seri A (WIKA02ACN2)"
-    }
-    
-    # Special case Combined conditions
-    has_price_increase = "peningkatan harga kumulatif yang signifikan" in pdf_texts_lower
-    has_cooling_down = "cooling down sebagai bentuk perlindungan bagi investor" in pdf_texts_lower
-    
-    if has_price_increase and has_cooling_down:
-        return (
-            f"Terjadinya peningkatan harga kumulatif yang signifikan pada saham {symbol}, "
-            f"dalam rangka cooling down sebagai bentuk perlindungan bagi investor"
-        )
-    
-    for pattern, message in reason_patterns.items():
-        if pattern in pdf_texts_lower:
-            return message
-    
-    return None
-
-
-def process_multiple_data_from_pdf(full_pdf_doc: str, symbol: str, 
-                                   pdf_url: str, root_pdf_url: str) -> list[dict[str]]:
-    """ 
-    Processes a PDF document containing multiple suspension data for a given stock symbol.
-
-    Args:
-        full_pdf_doc (str): The text content of the PDF document.
-        symbol (str): The stock symbol for which the data is being processed.
-        pdf_url (str): The URL of the PDF file.
-        root_pdf_url (str): The root URL for constructing the full PDF URL.
-    
-    Returns:
-        list[dict[str]]: A list of dictionaries containing the processed suspension data.
-    """
-    text = " ".join(full_pdf_doc.split())
-
-    results = []
-
-    # Get reason
-    reason = get_reason(text, symbol)
-
-    decision_match = re.search(
-        r"Atas dasar hal tersebut di atas, Bursa memutuskan untuk:(.*)",
-        text,
-        flags=re.S | re.I
-    )
-
-    # Work with only the decision section if found
-    decision_text = decision_match.group(1) if decision_match else text
-    LOGGER.info(f"decision text {decision_text}")
-
-    # Split by "a." an  d "b."
-    section_a_match = re.search(r"a\.(.*?)(?=b\.)", decision_text, flags=re.S | re.I)
-    section_b_match = re.search(r"b\.(.*)", decision_text, flags=re.S | re.I)
-    
-    LOGGER.info(f"section_a {section_a_match}")
-
-    # Date pattern
-    date_pattern = r"(\d{1,2}\s+\w+\s+\d{4})"
-    
-    # Process Section A 
-    if section_a_match:
-        section_a = section_a_match.group(1)
-
-        # Find date in section A
-        date_match = re.search(date_pattern, section_a, flags=re.I)
-        suspend_date = date_match.group(1) if date_match else None
-
-        # Find symbols in parentheses
-        symbols = re.findall(r"\(([A-Z]{4})\)", section_a)
-        for sym in symbols:
-            results.append({
-                "symbol": f"{sym}.JK", 
-                "pdf_url": root_pdf_url + pdf_url,
-                "suspension_date": suspend_date, 
-                "reason": reason
-            })
-
-    # Process Section B 
-    if section_b_match:
-        section_b = section_b_match.group(1)
-        # Find symbols in parentheses
-        symbols = re.findall(r"\(([A-Z]{4})\)", section_b)
-        for sym in symbols:
-            results.append({
-                "symbol": f"{sym}.JK", 
-                "pdf_url": root_pdf_url + pdf_url,
-                "suspension_date": None, 
-                "reason": reason
-            })
-
-    # Fallback if section a and b not appear
-    if not section_a_match and not section_b_match:
-        symbols = re.findall(r"\d+\.\s+([A-Z]{3,4})\b", text)
-        suspend_date = get_date_from_pdf(text)
-        for sym in symbols:
-            results.append({
-                "symbol": f"{sym}.JK", 
-                "pdf_url": root_pdf_url + pdf_url,
-                "suspension_date": suspend_date, 
-                "reason": reason
-            })
-
-    return results
 
 
 def check_suspend_six_month(df_payload: pd.DataFrame, requester: APIRequester) -> pd.DataFrame:
@@ -280,6 +95,10 @@ def check_suspend_six_month(df_payload: pd.DataFrame, requester: APIRequester) -
         pd.DataFrame: The updated DataFrame with suspension reasons and dates for symbols suspended for more
     """
     df_suspend_six_month = prepare_df_suspend_six_month(requester)
+    if df_suspend_six_month.empty:
+        LOGGER.warning("Six-month suspension list unavailable, skipping the override")
+        return df_payload
+
     df_suspend_six_month['Kode'] = df_suspend_six_month['Kode'].apply(lambda x: x + '.JK')
     suspend_dict = df_suspend_six_month.set_index('Kode')['Tanggal Suspensi'].to_dict()
 
@@ -289,9 +108,16 @@ def check_suspend_six_month(df_payload: pd.DataFrame, requester: APIRequester) -
 
     LOGGER.info(f"Matched count suspend six month: {mask.sum()}")
 
-    df_payload.loc[mask, 'reason'] = "Suspend more than 6 month"
-    df_payload.loc[mask, 'suspension_date'] = df_payload.loc[mask, 'symbol'].map(suspend_dict)
+    # Only fill what the PDF parse could not establish: a specific reason or date
+    # already extracted from the announcement must never be replaced by the generic
+    # six-month wording or by the workbook's date.
+    fill_reason = mask & df_payload['reason'].isna()
+    fill_date = mask & df_payload['suspension_date'].isna()
 
+    df_payload.loc[fill_reason, 'reason'] = "Suspend more than 6 month"
+    df_payload.loc[fill_date, 'suspension_date'] = df_payload.loc[fill_date, 'symbol'].map(suspend_dict)
+
+    LOGGER.info(f"Six-month override: reason filled {fill_reason.sum()}, date filled {fill_date.sum()}")
     return df_payload
 
 
@@ -387,14 +213,11 @@ def clean_dataframe_payload(df: pd.DataFrame) -> pd.DataFrame:
     df_missing = df[df.isnull().any(axis=1)] 
     file_name = "data_incomplete/idx_suspension_missing_data.csv"
     
-    # Process missing data with proper handle duplicate
+    # process_incomplete_data already appends the deduped rows; writing them again here
+    # duplicated every missing row (566 lines for 442 unique pairs).
     if len(df_missing) > 0:
         process_incomplete_data(df_missing, file_name)
-
-    # Only write headers if file doesn't exist
-    write_header = not os.path.exists(file_name)
-    df_missing.to_csv(file_name, mode="a", header=write_header, index=False)
-    LOGGER.info(f"Missing data saved to data_incomplete/idx_suspension_missing_data.csv with {len(df_missing)} rows")
+    LOGGER.info(f"Missing data saved to {file_name} with {len(df_missing)} rows")
 
     df_clean = df.dropna(subset=['suspension_date', 'reason']).copy()
     df_clean['suspension_date'] = (
@@ -409,10 +232,18 @@ def clean_dataframe_payload(df: pd.DataFrame) -> pd.DataFrame:
     return df_clean
 
 
-def run_get_idx_suspension(allowed_symbols: list[str], requester: APIRequester) -> pd.DataFrame | list:
+def run_get_idx_suspension(allowed_symbols: list[str], requester: APIRequester,
+                           next_session=None) -> pd.DataFrame | list:
     """
     Main function to run the IDX suspension scraper.
     Processes the suspension data for allowed symbols and returns a DataFrame.
+
+    Args:
+        allowed_symbols: symbols present in idx_company_profile.
+        requester: APIRequester for this window.
+        next_session: callable mapping an ISO date to the next IDX trading day,
+            used to normalise a halt that only starts in a later session of the
+            announcement day. Without it such a row keeps the raw date.
 
     Args:
         allowed_symbols (list[str]): List of allowed stock symbols to filter the results.  
@@ -422,75 +253,59 @@ def run_get_idx_suspension(allowed_symbols: list[str], requester: APIRequester) 
         pd.DataFrame: A DataFrame containing the processed suspension data.
     """
     final_payload = []
+    quarantine: list[dict] = []
+    failures: list[dict] = []
     root_pdf_url = requester.root_url
+    allowed = set(allowed_symbols)
 
-    response = requester.fetch_url(requester.api_url)
-    if response == False:
-        LOGGER.warning("Error accesing api url.") 
-    
-    datas = json.loads(response)
+    # fetch_url raises when IDX blocks every route: a blocked run must fail loudly
+    # instead of looking like a quiet day with no suspensions.
+    datas = json.loads(requester.fetch_url(requester.api_url))
 
     data_results = datas.get('Results')
     LOGGER.info(f'Length data need to process: {len(data_results)}')
 
     for data in data_results:
-        try:    
-            # Get pdf url
+        try:
             pdf_url = data.get('Data_Download')
-
-            # Get full pdf text
+            announced = str(data.get('Date') or '')[:10] or None
             pdf_texts = get_pdf_texts(requester, pdf_url)
-            
-            # Check if multiple symbols
-            title = data.get('Judul')
 
-            if "(\u003E1 kode)" in title.lower() or ">1 kode" in title.lower():
-                symbol = data.get('Kode')
-                LOGGER.info(f"Process multiple data {symbol}")
+            extraction = extract_announcement(
+                pdf_texts, data.get('Kode'), announced, allowed, next_session=next_session)
+            LOGGER.info(f"{data.get('Kode')} -> {extraction.verdict} {extraction.detail or ''}")
 
-                # Process multiple
-                multiple_data = process_multiple_data_from_pdf(pdf_texts, symbol, pdf_url, root_pdf_url)
-
-                # Filter out symbols not in allowed_symbols
-                filtered_data = [
-                    item for item in multiple_data 
-                    if item.get('symbol') in allowed_symbols
-                ]
-
-                if filtered_data:  
-                    final_payload.extend(filtered_data)
-                else:
-                    LOGGER.info(f"No allowed symbols found in multiple data")
-            else: 
-                # Get symbol and validate
-                symbol = data.get('Kode')
-                symbol = f"{symbol}.JK"
-                if symbol not in allowed_symbols:
-                    LOGGER.warning(f"Symbol {symbol} not in allowed symbols, skipping")
-                    continue
-
-                LOGGER.info(f"Process single data {symbol}")
-                # Get date from pdf 
-                date = get_date_from_pdf(pdf_texts)
-                # Get reason from pdf
-                reason = get_reason(pdf_texts, symbol)
-
-                final_payload.append(
-                    {
-                        "symbol": symbol,
-                        'pdf_url': root_pdf_url + pdf_url,
-                        'suspension_date': date,
-                        'reason': reason
-                    }
-                )
+            if extraction.verdict == 'OK_START':
+                final_payload.extend(
+                    {"symbol": row.symbol,
+                     'pdf_url': root_pdf_url + pdf_url,
+                     'suspension_date': row.suspension_date,
+                     'reason': row.reason,
+                     'raw_date': row.raw_date}
+                    for row in extraction.rows)
+            else:
+                quarantine.append({
+                    'symbol': str(data.get('Kode') or 'UNKNOWN'),
+                    'announcement_date': announced or '',
+                    'pdf_url': root_pdf_url + pdf_url,
+                    'verdict': extraction.verdict,
+                    'detail': extraction.detail or '',
+                    'evidence': extraction.evidence or '',
+                })
 
         except Exception as error:
             symbol_for_error = data.get('Kode', 'UNKNOWN')
             LOGGER.error(f"A critical error occurred while processing symbol {symbol_for_error}: {error}")
+            failures.append({'symbol': str(symbol_for_error),
+                             'pdf_url': data.get('Data_Download'),
+                             'error': f'{type(error).__name__}: {error}'})
             continue
     
     LOGGER.info(f"Check final payload: {final_payload[:5]}")
     LOGGER.info(f"Successfully processed and found dates for {len(final_payload)} items.")
+    write_quarantine(quarantine)
+    if failures:
+        LOGGER.error(f"{len(failures)} announcement(s) failed to process: {failures[:5]}")
     
     if not final_payload:
         LOGGER.info(f"final payload is empty: {final_payload}, terminating the rest process")
@@ -505,6 +320,7 @@ def run_get_idx_suspension(allowed_symbols: list[str], requester: APIRequester) 
 
     # Drop missing values and saved dataframe that has missing values as csv
     df_final_payload = clean_dataframe_payload(df_payload)
+    df_final_payload.attrs['failures'] = failures
     
     return df_final_payload 
     

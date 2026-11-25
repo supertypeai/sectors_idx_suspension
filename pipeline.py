@@ -3,7 +3,9 @@ from datetime import datetime, timedelta
 
 from setup                                  import LOGGER, SUPABASE_KEY, SUPABASE_URL
 from scraper_engine.api_requester           import APIRequester
-from scraper_engine.idx_suspension_scraper  import run_get_idx_suspension
+from scraper_engine.idx_suspension_scraper  import run_get_idx_suspension, write_quarantine
+from scraper_engine.l4                      import apply_l4, existing_keys, public_rows
+from scraper_engine.sessions                import load_sessions, next_session_factory
 
 import pandas as pd 
 import argparse
@@ -46,7 +48,7 @@ def upsert_to_db(df_payload: pd.DataFrame | list[dict[str]], supabase_client: cr
             LOGGER.info("DataFrame is empty after cleaning. Skipping upsert.")
             return
         
-        payload_list = df_payload.to_dict(orient="records")
+        payload_list = public_rows(df_payload.to_dict(orient="records"))
         
         LOGGER.info(f"Check payload to upsert: \n{payload_list}")
 
@@ -88,9 +90,30 @@ if __name__ == '__main__':
     supabase_client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
     allowed_symbols = get_company_profile_symbol(supabase_client)
-    df_payload = run_get_idx_suspension(allowed_symbols, requester)
-    
+    sessions = load_sessions(supabase_client)
+    df_payload = run_get_idx_suspension(allowed_symbols, requester,
+                                        next_session=next_session_factory(sessions))
+
+    # Filter continuation notices here as well: a daily run must not upsert a
+    # "still suspended" announcement as if the halt started that day.
+    if not isinstance(df_payload, list) and not df_payload.empty:
+        records = df_payload.to_dict(orient="records")
+        symbols = sorted({row['symbol'] for row in records})
+        late: list[dict] = []
+        kept = apply_l4(records, existing_keys(supabase_client, symbols),
+                        supabase_client, sessions, log=LOGGER.info, quarantine=late)
+        write_quarantine(late)
+        LOGGER.info(f"L4 gate kept {len(kept)} of {len(records)} parsed row(s)")
+        df_payload = pd.DataFrame(kept)
+
     upsert_to_db(df_payload, supabase_client)
+
+    # A partial fetch must not pass as a clean run: the CI job has to go red so the
+    # missing days get noticed and re-scraped.
+    failures = getattr(df_payload, 'attrs', {}).get('failures') or []
+    if failures:
+        LOGGER.error(f"Run finished with {len(failures)} unprocessed announcement(s); exiting non-zero")
+        raise SystemExit(1)
 
     # Example Run
     # python idx_suspension/suspension.py --start_date 20250801 --end_date 20250807 

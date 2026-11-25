@@ -25,23 +25,31 @@ class APIRequester:
         self.api_url = f"https://www.idx.co.id/primary/NewsAnnouncement/GetSuspension?indexFrom=1&dateFrom={start_date}&dateTo={end_date}&pageSize=9999&lang=en&type=spt"
         self.api_url_suspend_more_six_month = "https://www.idx.co.id/id/perusahaan-tercatat/suspensi-6-bulan/"
 
-    def fetch_url(self, url: str) -> str | bool:
+    def fetch_url(self, url: str, retries: int = 3) -> str:
         """
         Fetches the content of a URL using the installed opener.
-        
+
         Args:
             url (str): The URL to fetch.
+            retries (int): Attempts before giving up.
 
         Returns:
-            str | bool: The decoded content of the URL as a string if successful,
-                        False if an error occurs during fetching.
+            str: The decoded content of the URL.
+
+        Raises:
+            RuntimeError: when every attempt fails, so a blocked run is loud
+                instead of silently producing an empty batch.
         """
-        # Use the installed opener to fetch the URL
-        try:
-            return idx_get(url if url else self.api_url, kind="json", proxies=self.proxies).decode()
-        except Exception as error:
-            print(f"Error fetching URL: {error}")
-            return False
+        last_error = None
+        for attempt in range(1, retries + 1):
+            try:
+                return idx_get(url if url else self.api_url, kind="json", proxies=self.proxies).decode()
+            except Exception as error:
+                last_error = error
+                LOGGER.error(f"IDX API attempt {attempt}/{retries} failed: {error}")
+                if attempt < retries:
+                    time.sleep(attempt * 5)
+        raise RuntimeError(f"IDX API unavailable after {retries} attempts: {last_error}")
     
     def fetch_pdf_file(self, pdf_url: str) -> fitz.Document:
         """ 
@@ -74,9 +82,10 @@ class APIRequester:
         """ 
         Gets the URL of the XLSX file containing suspension data from IDX.
 
-        Args:
-            None
-        
+        The page has carried unrelated workbooks (a potential-delisting list among
+        them), so only a link that names a suspension is accepted. No match means no
+        override, never the wrong file.
+
         Returns:
             str | None: The URL of the XLSX file if found, None if not found.
         """
@@ -85,18 +94,21 @@ class APIRequester:
                            proxies=self.proxies).decode('utf-8')
 
             soup = BeautifulSoup(data, 'html.parser')
-            link_tag = soup.find("a", href=lambda href: href and href.endswith(".xlsx"))
-            if link_tag:
-                xlsx_url = 'https://www.idx.co.id' + link_tag.get('href')
-                LOGGER.info(f"Successfully found URL: {xlsx_url}")
-                return xlsx_url
-            else:
-                LOGGER.error("Error: Could not find the .xlsx link in the HTML.")
+            candidates = [tag for tag in soup.find_all("a", href=lambda href: href and href.endswith(".xlsx"))]
+            matches = [tag for tag in candidates if 'suspensi' in (tag.get('href') or '').lower()
+                       or 'suspensi' in tag.get_text(' ').lower()]
+            if not matches:
+                LOGGER.warning("No suspension xlsx on the six-month page (found: %s), skipping override",
+                               [tag.get('href') for tag in candidates][:5])
                 return None
-            
+
+            xlsx_url = 'https://www.idx.co.id' + matches[0].get('href')
+            LOGGER.info(f"Successfully found URL: {xlsx_url}")
+            return xlsx_url
+
         except Exception as error:
             LOGGER.error(f"Error fetching the URL: {error}")
-            return ""
+            return None
 
     def fetch_xlsx_file(self) -> pd.DataFrame: 
         """ 

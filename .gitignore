@@ -1,3 +1,6 @@
 .env
 .venv
 __pycache__/
+# local-only helpers, never shipped
+backfill.py
+tests/

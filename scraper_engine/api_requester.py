@@ -2,7 +2,7 @@ from io         import BytesIO
 from bs4        import BeautifulSoup
 
 from setup import PROXY, LOGGER
-from idx_fetch import idx_get
+from idx_fetch import idx_get, _looks_right
 
 import pandas as pd 
 import fitz 
@@ -10,20 +10,32 @@ import time
 
 
 class APIRequester:
-    def __init__(self, start_date: str, end_date: str, proxy=PROXY):
+    def __init__(self, start_date: str, end_date: str, proxy=PROXY, session=None):
         """
         Initializes the ProxyRequester class with the provided proxy
 
         Args:
             proxy (str, optional): the proxy to be used. Defaults to None. Example: 'brd-customer-xxx-zone-xxx:xxx@brd.superproxy.io:xxx'
+            session (requests.Session, optional): an already-cleared IDX session
+                (real browser cookies). When given, every fetch uses it and the
+                fingerprint ladder is skipped.
         """
         # Set up SSL context to unverified
         self.proxies = {"http": proxy, "https": proxy} if proxy else None
+        self.session = session
         
         # Setup api url
         self.root_url ='https://www.idx.co.id'
         self.api_url = f"https://www.idx.co.id/primary/NewsAnnouncement/GetSuspension?indexFrom=1&dateFrom={start_date}&dateTo={end_date}&pageSize=9999&lang=en&type=spt"
         self.api_url_suspend_more_six_month = "https://www.idx.co.id/id/perusahaan-tercatat/suspensi-6-bulan/"
+
+    def _browser_get(self, url: str, kind: str) -> bytes:
+        """One GET through the cleared browser session; the body shape is the status."""
+        response = self.session.get(url, timeout=(10, 120), verify=False)
+        response.raise_for_status()
+        if not _looks_right(response, kind):
+            raise RuntimeError(f"non-{kind} body (HTTP {response.status_code}) - challenge page")
+        return response.content
 
     def fetch_url(self, url: str, retries: int = 3) -> str:
         """
@@ -43,6 +55,8 @@ class APIRequester:
         last_error = None
         for attempt in range(1, retries + 1):
             try:
+                if self.session is not None:
+                    return self._browser_get(url if url else self.api_url, kind="json").decode()
                 return idx_get(url if url else self.api_url, kind="json", proxies=self.proxies).decode()
             except Exception as error:
                 last_error = error
@@ -65,7 +79,8 @@ class APIRequester:
         full_url = self.root_url + pdf_url
 
         try:
-            file_content = idx_get(full_url, kind="raw", proxies=self.proxies)
+            file_content = (self._browser_get(full_url, kind="raw") if self.session is not None
+                            else idx_get(full_url, kind="raw", proxies=self.proxies))
         
             pdf_text = fitz.open(stream=file_content, filetype="pdf")
             return pdf_text
@@ -90,8 +105,10 @@ class APIRequester:
             str | None: The URL of the XLSX file if found, None if not found.
         """
         try:
-            data = idx_get(self.api_url_suspend_more_six_month, kind="raw",
-                           proxies=self.proxies).decode('utf-8')
+            data = (self._browser_get(self.api_url_suspend_more_six_month, kind="raw")
+                    if self.session is not None
+                    else idx_get(self.api_url_suspend_more_six_month, kind="raw",
+                                 proxies=self.proxies)).decode('utf-8')
 
             soup = BeautifulSoup(data, 'html.parser')
             candidates = [tag for tag in soup.find_all("a", href=lambda href: href and href.endswith(".xlsx"))]
@@ -130,7 +147,9 @@ class APIRequester:
             try:
                 LOGGER.info('Downloading xlsx file')
                 # Download file as binary
-                file_bytes = idx_get(xlsx_url, kind="raw", proxies=self.proxies, timeout=(10, timeout))
+                file_bytes = (self._browser_get(xlsx_url, kind="raw") if self.session is not None
+                              else idx_get(xlsx_url, kind="raw", proxies=self.proxies,
+                                           timeout=(10, timeout)))
 
                 df = pd.read_excel(BytesIO(file_bytes))
                 return df

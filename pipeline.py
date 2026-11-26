@@ -73,13 +73,18 @@ def upsert_to_db(df_payload: pd.DataFrame | list[dict[str]], supabase_client: cr
         raise Exception(f"Error upserting to database: {error}")
 
 
+# The daily window is a lookback, not one day: a notice published after the run
+# (or a failed run) would otherwise never be fetched again and a whole halt cohort
+# would vanish. Duplicates cost nothing - existing_keys and the L4 gate drop them.
+LOOKBACK_DAYS = 7
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='IDX Suspension Scraper')
 
     today = datetime.now().strftime('%Y%m%d')
-    yesterday = (datetime.now() - timedelta(days=1)).strftime('%Y%m%d')
+    lookback = (datetime.now() - timedelta(days=LOOKBACK_DAYS)).strftime('%Y%m%d')
 
-    parser.add_argument('--start_date', default=yesterday ,help='Start date in YYYYMMDD format (e.g., 20250801)')
+    parser.add_argument('--start_date', default=lookback ,help='Start date in YYYYMMDD format (e.g., 20250801)')
     parser.add_argument('--end_date', default=today, help='End date in YYYYMMDD format (e.g., 20250807)')
 
     args = parser.parse_args()
@@ -110,9 +115,18 @@ if __name__ == '__main__':
 
     # A partial fetch must not pass as a clean run: the CI job has to go red so the
     # missing days get noticed and re-scraped.
-    failures = getattr(df_payload, 'attrs', {}).get('failures') or []
+    attrs = getattr(df_payload, 'attrs', {})
+    failures = attrs.get('failures') or []
     if failures:
         LOGGER.error(f"Run finished with {len(failures)} unprocessed announcement(s); exiting non-zero")
+        raise SystemExit(1)
+
+    # An unreadable mass list hides an unknown number of halts, so it fails the run
+    # instead of leaving a note in the ledger nobody reads.
+    unreadable = attrs.get('unreadable') or []
+    if unreadable:
+        LOGGER.error(f"{len(unreadable)} mass list(s) still unreadable after parsing: "
+                     f"{[u['kode'] for u in unreadable]}; exiting non-zero")
         raise SystemExit(1)
 
     # Example Run

@@ -255,6 +255,7 @@ def run_get_idx_suspension(allowed_symbols: list[str], requester: APIRequester,
     final_payload = []
     quarantine: list[dict] = []
     failures: list[dict] = []
+    unreadable: list[dict] = []
     root_pdf_url = requester.root_url
     allowed = set(allowed_symbols)
 
@@ -275,6 +276,24 @@ def run_get_idx_suspension(allowed_symbols: list[str], requester: APIRequester,
                 pdf_texts, data.get('Kode'), announced, allowed, next_session=next_session)
             LOGGER.info(f"{data.get('Kode')} -> {extraction.verdict} {extraction.detail or ''}")
 
+            # A notice IDX flags as a multi-company list that yields no list (or a single
+            # ticker scraped from prose) was not read. That is a parse failure, not a
+            # quiet day: record it and let the run go red.
+            flagged_multi = str(data.get('Kode') or '').startswith('>1')
+            # Only "nothing came back" is a failure: a notice that yields one ticker may
+            # simply be a single-company filing IDX flagged as a list, and failing on
+            # those would flap the job red every time one is published.
+            unread = extraction.verdict == 'PARSE_FAILED' or (
+                flagged_multi and extraction.verdict != 'UNSUSPENSION'
+                and not extraction.rows)
+            if unread:
+                unreadable.append({'kode': str(data.get('Kode')),
+                                   'announcement_date': announced or '',
+                                   'pdf_url': root_pdf_url + pdf_url,
+                                   'verdict': extraction.verdict,
+                                   'detail': extraction.detail or '',
+                                   'tickers': len(extraction.rows)})
+
             if extraction.verdict == 'OK_START':
                 final_payload.extend(
                     {"symbol": row.symbol,
@@ -284,14 +303,18 @@ def run_get_idx_suspension(allowed_symbols: list[str], requester: APIRequester,
                      'raw_date': row.raw_date}
                     for row in extraction.rows)
             else:
-                quarantine.append({
-                    'symbol': str(data.get('Kode') or 'UNKNOWN'),
-                    'announcement_date': announced or '',
-                    'pdf_url': root_pdf_url + pdf_url,
-                    'verdict': extraction.verdict,
-                    'detail': extraction.detail or '',
-                    'evidence': extraction.evidence or '',
-                })
+                # A mass list names many companies: log one ledger row per ticker so a
+                # dropped list stays attributable, not a single opaque '>1' entry.
+                for symbol in [row.symbol for row in extraction.rows] or \
+                              [str(data.get('Kode') or 'UNKNOWN')]:
+                    quarantine.append({
+                        'symbol': symbol,
+                        'announcement_date': announced or '',
+                        'pdf_url': root_pdf_url + pdf_url,
+                        'verdict': extraction.verdict,
+                        'detail': extraction.detail or '',
+                        'evidence': extraction.evidence or '',
+                    })
 
         except Exception as error:
             symbol_for_error = data.get('Kode', 'UNKNOWN')
@@ -307,9 +330,15 @@ def run_get_idx_suspension(allowed_symbols: list[str], requester: APIRequester,
     if failures:
         LOGGER.error(f"{len(failures)} announcement(s) failed to process: {failures[:5]}")
     
+    if unreadable:
+        LOGGER.error(f"{len(unreadable)} mass list(s) could not be read: {unreadable[:3]}")
+
     if not final_payload:
         LOGGER.info(f"final payload is empty: {final_payload}, terminating the rest process")
-        return final_payload
+        empty = pd.DataFrame()
+        empty.attrs['failures'] = failures
+        empty.attrs['unreadable'] = unreadable
+        return empty
 
     df_payload = pd.DataFrame(final_payload)
     # Check dataframe suspend six month
@@ -321,6 +350,7 @@ def run_get_idx_suspension(allowed_symbols: list[str], requester: APIRequester,
     # Drop missing values and saved dataframe that has missing values as csv
     df_final_payload = clean_dataframe_payload(df_payload)
     df_final_payload.attrs['failures'] = failures
+    df_final_payload.attrs['unreadable'] = unreadable
     
     return df_final_payload 
     

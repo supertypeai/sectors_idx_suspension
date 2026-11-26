@@ -51,6 +51,10 @@ MID_SESSION = (r'sesi\s+(?:ii|iii|iv|2|3|4)\b'
 # suspension for this table: the badge belongs to the board status. Single-company
 # announcements that cite the same wording stay valid halts.
 BOARD_STATUS_FAMILIES = {'special-monitoring'}
+# The decision clause itself, before the ticker list: a board list that suspends trading
+# here is a halt (2025-01-31, 2025-04-30, 2025-08-01 all place names on the special
+# monitoring board AND suspend them), while a placement notice never says it suspends.
+DECISION_SUSPENDS = re.compile(r'melakukan suspensi|pengh?entian sementara|suspend\w*', re.I)
 
 REASONS: list[tuple[str, str, str]] = [
     ('peningkatan harga kumulatif yang signifikan',
@@ -71,10 +75,25 @@ REASONS: list[tuple[str, str, str]] = [
      'lk-interim', 'Belum menyampaikan laporan keuangan interim'),
     ('laporan keuangan auditan',
      'lk-audited', 'Belum menyampaikan laporan keuangan auditan tahunan'),
+    ('annual audited financial statements',
+     'lk-audited', 'Belum menyampaikan laporan keuangan auditan tahunan'),
+    ('audited financial statements',
+     'lk-audited', 'Belum menyampaikan laporan keuangan auditan tahunan'),
+    ('interim financial statements',
+     'lk-interim', 'Belum menyampaikan laporan keuangan interim'),
+    # 2026-02-18: annual listing fee sanction. The old phrase carried the year, so a
+    # 50-ticker notice matched nothing and was dropped as NO_REASON.
+    ('biaya pencatatan tahunan',
+     'listing-fee', 'Keterlambatan pembayaran biaya pencatatan tahunan (annual listing fee)'),
     ('voluntary delisting',
      'delisting', 'Perseroan berencana melakukan voluntary delisting dan go private'),
     ('pembatalan pencatatan',
      'delisting-request', 'Permohonan pembatalan pencatatan (delisting) saham Perseroan'),
+    # 2026-07-01: trading was halted for companies still trading while on the special
+    # monitoring board, so the notice is a suspension, not a board placement.
+    ('with active trading status',
+     'board-suspension', 'Suspensi perdagangan Efek bagi Perusahaan Tercatat dengan status '
+                         'perdagangan aktif di Papan Pemantauan Khusus'),
     ('papan pemantauan khusus',
      'special-monitoring', 'Efek Perseroan telah berada dalam papan pemantauan khusus'),
     ('special monitoring board',
@@ -87,7 +106,7 @@ REASONS: list[tuple[str, str, str]] = [
 @dataclass
 class Row:
     symbol: str
-    suspension_date: str
+    suspension_date: str | None   # None only for a row kept for the ledger, never inserted
     reason: str | None
     reason_family: str | None
     evidence: str | None
@@ -167,13 +186,26 @@ def parse_reason(text: str, symbol: str) -> tuple[str | None, str | None, str | 
     return None, None, None
 
 
+# IDX files repeals under the same ">1 Code" flag as halts (20 of them in the current
+# feed). They carry no decision block, so the subject line is what identifies them.
+REPEAL = re.compile(r'pencabutan\s+(?:penghentian\s+sementara|suspensi)'
+                    r'|pembukaan\s+kembali'
+                    r'|penyesuaian\s+atas\s+penghentian\s+sementara', re.I)
+# "Melakukan suspensi" imposes a halt; "tetap melakukan" keeps one. Anything else in the
+# block (membuka/mencabut/menyesuaikan) is relief, even when the subject says repeal.
+IMPOSES = re.compile(r'melakukan\s+(?:suspensi|penghentian)|tetap\s+melakukan', re.I)
+
 def is_unsuspension(text: str) -> bool:
     """True when the FIRST decision clause opens a suspension.
 
     Later clauses may re-suspend (HDTX does), but a notice whose first act is
     "Membuka penghentian sementara" is not a new halt.
     """
-    block = decision_block(text)
+    block = decision_block(text) or ''
+    if REPEAL.search(' '.join(text.split())[:600]) and not IMPOSES.search(block):
+        # A halt can cite an earlier repeal in its references, and a partial repeal still
+        # says "membuka penghentian sementara" - only an imposing decision wins.
+        return True
     if not block:
         return False
     first = re.split(r'(?:^|\s)2\.\s', block, maxsplit=1)[0].lower()
@@ -181,15 +213,22 @@ def is_unsuspension(text: str) -> bool:
 
 
 def parse_mass_list(text: str) -> list[tuple[str, str]]:
-    """(ticker, status) pairs from a multi-company table; status may be ''."""
+    """(ticker, status) pairs from a multi-company table; status may be ''.
+
+    The table arrives in three shapes: a ticker alone, "10. KARW", and
+    "KARW PT Meratus Jasa Prima Tbk" with the number on the line above. All three are
+    a ticker, so a notice's list reads the same however the PDF wrapped it.
+    """
     lines = [' '.join(line.split()) for line in text.split('\n')]
     found: dict[str, str] = {}
     for index, line in enumerate(lines):
         bare = re.fullmatch(r'(?:\d+\.\s*)?([A-Z]{4})', line)
         numbered = re.match(r'^\d+\.\s*([A-Z]{4})\b', line)
-        ticker = bare.group(1) if bare else (numbered.group(1) if numbered else None)
-        if not ticker:
+        named = re.match(r'^([A-Z]{4})\s+PT\b', line)
+        hit = bare or numbered or named
+        if not hit:
             continue
+        ticker = hit.group(1)
         status = ''
         for probe in lines[index:index + 4]:
             hit = re.search(r'\b(Active|Suspended)\b', probe)
@@ -231,17 +270,34 @@ def extract_announcement(text: str, kode: str, announced: str | None,
     else:
         date = raw_date
     if not date:
-        return Extraction('NO_DATE', evidence=evidence, detail=kind)
+        # A date-less mass list still names the companies it halts. Carry the tickers
+        # so the ledger can show them; the date stays unset rather than guessed.
+        named = [Row(f'{t}.JK', None, None, '', evidence, None)
+                 for t, _status in (table if multi else [])]
+        return Extraction('NO_DATE', named, evidence, kind)
 
     if multi:
         if not table:
             return Extraction('PARSE_FAILED', detail='mass list without tickers')
         reason, family, phrase = parse_reason(text, 'Efek')
         if not reason:
-            return Extraction('NO_REASON', detail=f'{len(table)} tickers, no cause')
+            return Extraction('NO_REASON',
+                              [Row(f'{t}.JK', date, None, '', evidence, raw_date)
+                               for t, _status in table],
+                              evidence, f'{len(table)} tickers, no cause')
+        # A board placement is not a halt. The 2026-07-01 notice is a halt on board
+        # names, so it carries its own reason family ('with active trading status')
+        # and never reaches this branch.
         if family in BOARD_STATUS_FAMILIES:
-            return Extraction('BOARD_STATUS', detail=f'{len(table)} tickers, board placement')
-        active = [t for t, status in table if status == 'Active']
+            block_text = decision_block(text) or ''
+            clause = ' '.join(re.split(r'\bNo\.|\bTicker\b|\bKode\b', block_text,
+                                       maxsplit=1)[0].split())[:300]
+            if not DECISION_SUSPENDS.search(clause):
+                return Extraction('BOARD_STATUS', detail=f'{len(table)} tickers, board placement')
+        # '' is an unreadable status, not "already suspended": the 2026-06-30 notice has
+        # no parseable status column at all. Only an explicit "Suspended" drops a ticker;
+        # the L4 gate then keeps the ones that really stopped trading on that date.
+        active = [t for t, status in table if status != 'Suspended']
         if not active:
             return Extraction('OK_CONTINUATION',
                               detail=f'{len(table)} tickers already suspended')
@@ -251,7 +307,7 @@ def extract_announcement(text: str, kode: str, announced: str | None,
         if not rows:
             return Extraction('NON_EQUITY', detail=f'{len(skipped)} active tickers outside profile')
         return Extraction('OK_START', rows, evidence,
-                          detail=f'{len(rows)} active of {len(table)}; skipped {len(skipped)}')
+                          detail=f'{len(rows)} of {len(table)} tickers; skipped {len(skipped)}')
 
     symbol = f'{kode}.JK'
     if symbol not in allowed_symbols:

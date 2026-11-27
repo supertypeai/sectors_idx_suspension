@@ -2,8 +2,8 @@ from datetime   import datetime
 
 from setup          import LOGGER
 from .api_requester import APIRequester
-from .extract       import (extract_announcement, parse_effective_date, parse_mass_list,
-                            parse_reason)
+from .extract       import (extract_announcement, general_imposition, parse_effective_date,
+                            parse_mass_list, parse_reason)
 
 import pandas as pd
 import json  
@@ -230,6 +230,76 @@ def clean_dataframe_payload(df: pd.DataFrame) -> pd.DataFrame:
     df_clean = df_clean.drop_duplicates(subset=['symbol', 'suspension_date'])
     LOGGER.info(f"Data after removing missing values and Duplicate: {len(df_clean)} rows")
     return df_clean
+
+
+def run_general_suspensions(allowed_symbols: list[str], requester: APIRequester,
+                            start_date: str, end_date: str, next_session=None
+                            ) -> tuple[list[dict], list[dict]]:
+    """Halts published as ordinary announcements inside [start_date, end_date].
+
+    The suspension endpoint only carries a subset of IDX's notices; the rest are filed in
+    the general feed, where the decision lives in a table instead of a clause. The feed has
+    no date filter, so the window is applied to PublishDate here.
+    Returns (rows, unreadable): rows are ready for the L4 gate, unreadable lists notices
+    that were flagged as a halt but yielded nothing.
+    """
+    allowed = set(allowed_symbols)
+    rows: list[dict] = []
+    unreadable: list[dict] = []
+
+    for item in requester.fetch_general_suspensions():
+        published = str(item.get('PublishDate') or '')[:10]
+        if not published:
+            continue
+        compact = published.replace('-', '')
+        if not (start_date <= compact <= end_date):
+            continue
+        if not general_imposition(str(item.get('Title') or '')):
+            continue
+
+        symbol = str(item.get('Code') or '').strip()
+        if not symbol:
+            continue
+        if f'{symbol}.JK' not in allowed:
+            continue
+
+        try:
+            attachments = item.get('Attachments')
+            if isinstance(attachments, str):
+                attachments = json.loads(attachments or '[]')
+            attachments = attachments or []
+        except (TypeError, ValueError) as error:
+            LOGGER.warning(f"general feed {symbol} {published}: bad attachments list ({error})")
+            attachments = []
+        main = [a for a in attachments if str(a.get('IsAttachment')) == '0'] or attachments
+        pdf_url = (main[0].get('FullSavePath') if main else '') or item.get('PdfPath') or ''
+        if not pdf_url:
+            unreadable.append({'kode': symbol, 'announcement_date': published,
+                               'verdict': 'NO_PDF', 'detail': ''})
+            continue
+
+        try:
+            pdf_text = get_pdf_texts(requester, pdf_url)
+            extraction = extract_announcement(pdf_text, symbol, published, allowed,
+                                              next_session=next_session)
+        except Exception as error:
+            LOGGER.error(f"general feed {symbol} {published}: {error}")
+            unreadable.append({'kode': symbol, 'announcement_date': published,
+                               'verdict': 'ERROR', 'detail': f'{type(error).__name__}'})
+            continue
+
+        if extraction.verdict == 'OK_START':
+            rows.extend({'symbol': r.symbol, 'suspension_date': r.suspension_date,
+                         'reason': r.reason, 'raw_date': r.raw_date, 'pdf_url': pdf_url}
+                        for r in extraction.rows if r.suspension_date)
+        elif not extraction.rows:
+            unreadable.append({'kode': symbol, 'announcement_date': published,
+                               'verdict': extraction.verdict,
+                               'detail': extraction.detail or ''})
+
+    if unreadable:
+        LOGGER.error(f"{len(unreadable)} general-feed notice(s) not read: {unreadable[:3]}")
+    return rows, unreadable
 
 
 def run_get_idx_suspension(allowed_symbols: list[str], requester: APIRequester,

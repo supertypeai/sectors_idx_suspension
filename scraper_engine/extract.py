@@ -5,6 +5,7 @@ visible instead of silently absent from idx_suspension.
 
 Verdicts:
     OK_START        row(s) with a real halt date and a regulatory reason
+                    (a tabular general-feed notice also lands here, detail 'table')
     OK_CONTINUATION mass-list rows whose status is not "Active"
     UNSUSPENSION    first decision clause opens a suspension, it does not impose one
     NO_DATE         no date inside the decision block
@@ -45,7 +46,13 @@ EN_DATE = r'([A-Za-z]+)\s+(\d{1,2})(?:st|nd|rd|th)?,?\s+(\d{4})'
 MID_SESSION = (r'sesi\s+(?:ii|iii|iv|2|3|4)\b'
                r'|session\s+(?:ii|iii|iv|2|3|4)\b')
 
-# family -> canonical reason text stored in idx_suspension.reason
+# family -> canonical reason text stored in idx_suspension.reason.
+#
+# Families in use: price-increase, price-decrease, investor-protection, bond-coupon-delay,
+# sukuk-delay, coupon-funding, lk-sanction, lk-interim, lk-audited, listing-fee, delisting,
+# delisting-request, going-concern, special-monitoring, board-suspension, and 'table' for a
+# halt read out of a tabular general-feed notice (the cause is that table's
+# "Penyebab Suspensi" cell, not a mapped phrase).
 # Families that describe a board placement rather than an event-driven halt. A
 # multi-company negative-equity / Special Monitoring list is not a discrete trading
 # suspension for this table: the badge belongs to the board status. Single-company
@@ -54,6 +61,7 @@ BOARD_STATUS_FAMILIES = {'special-monitoring'}
 # The decision clause itself, before the ticker list: a board list that suspends trading
 # here is a halt (2025-01-31, 2025-04-30, 2025-08-01 all place names on the special
 # monitoring board AND suspend them), while a placement notice never says it suspends.
+# `pengh?entian` also matches IDX's occasional misspelling ("pengetian sementara").
 DECISION_SUSPENDS = re.compile(r'melakukan suspensi|pengh?entian sementara|suspend\w*', re.I)
 
 REASONS: list[tuple[str, str, str]] = [
@@ -177,6 +185,85 @@ def parse_effective_date(text: str, announced: str | None = None,
     return None, None, 'no_date'
 
 
+TABLE_DATE_ID = re.compile(r'(\d{1,2})\s+([A-Za-z]+)\s+(\d{4})')
+TABLE_DATE_NUM = re.compile(r'(\d{1,2})-(\d{2})-(\d{4})')
+TABLE_WINDOW = 45          # cells read after the ticker row until the date shows up
+TABLE_SKIP_CELL = re.compile(r'(?i)^(sesi|session|seluruh|all markets|pasar|regular)')
+
+
+# The general announcement feed mixes three kinds of document under a suspension title.
+GENERAL_IMPOSE = re.compile(r'penghentian sementara perdagangan|temporary (trading )?suspension'
+                            r'|suspensi (perdagangan|efek)', re.I)
+GENERAL_RELIEF = re.compile(r'^\s*(pembukaan|pencabutan|lifting|opening)|hanya di pasar negosiasi',
+                            re.I)
+GENERAL_NOISE = re.compile(r'rencana|realisasi|keterbukaan|laporan|perkembangan|pemulihan'
+                           r'|penyesuaian|permohonan|progress|pemberitahuan', re.I)
+
+
+def general_imposition(title: str) -> bool:
+    """True for a general-feed item that starts a halt.
+
+    Repeals ("Pembukaan/Pencabutan"), recovery-plan filings and progress reports mention
+    suspension too; only the imposition is a new halt.
+    """
+    title = title or ''
+    return bool(GENERAL_IMPOSE.search(title)) and not (
+        GENERAL_RELIEF.search(title) or GENERAL_NOISE.search(title))
+
+
+def table_row(text: str, symbol: str) -> tuple[str | None, str | None, str | None]:
+    """Date and cause from a tabular suspension notice (general announcement feed).
+
+    Those notices carry no decision clause: the exchange states the halt in a table whose
+    columns are "Kode Efek / Nama Emiten / Penyebab Suspensi / Tanggal Mulai Suspensi".
+    The PDF text puts each cell on its own line and often splits the date ("08 November"
+    / "2023"), so the ticker row is read cell by cell until a date appears.
+
+    Two heuristics carry this: the cause starts after the first "Tbk" cell (a notice
+    without one folds the company name into the reason) and the date must land within
+    TABLE_WINDOW cells (a longer table yields no row, which falls back to NO_DATE rather
+    than a guessed date). Returns (iso_date, reason, evidence) or (None, None, None).
+    """
+    ticker = symbol.replace('.JK', '')
+    lines = [' '.join(line.split()) for line in text.split('\n')]
+    for index, line in enumerate(lines):
+        if line != ticker:
+            continue
+        window = lines[index + 1:index + TABLE_WINDOW]
+        name_end = next((i for i, cell in enumerate(window) if re.search(r'\bTbk\b', cell)), None)
+        cause_from = (name_end + 1) if name_end is not None else 0
+        for offset, cell in enumerate(window):
+            pair = f'{cell} {window[offset + 1]}' if offset + 1 < len(window) else cell
+            numeric = TABLE_DATE_NUM.search(pair)
+            named = None if numeric else TABLE_DATE_ID.search(pair)
+            if not (numeric or named):
+                continue
+            if named:
+                iso = _iso(named.group(3), named.group(2), named.group(1))
+            else:
+                iso = _iso(numeric.group(3), str(int(numeric.group(2))), numeric.group(1))
+            if not iso:
+                continue
+            cells = [c for c in window[cause_from:offset] if not TABLE_SKIP_CELL.match(c)]
+            # The table wraps mid-word ("Kelangsunga" / "n Usaha"): glue single-character
+            # fragments back on so the stored reason reads as the PDF meant it.
+            joined = []
+            for cell in cells:
+                if joined and len(cell) <= 1:
+                    joined[-1] += cell
+                elif joined and re.match(r'^\S\s', cell):     # "n Usaha (Going Concern)"
+                    joined[-1] += cell[0]
+                    tail = cell[2:].strip()
+                    if tail:
+                        joined.append(tail)
+                else:
+                    joined.append(cell)
+            cause = ' '.join(joined)
+            reason = cause[:180].strip(' .;-') or None
+            return iso, reason, f'{ticker} table row, start {iso}'
+    return None, None, None
+
+
 def parse_reason(text: str, symbol: str) -> tuple[str | None, str | None, str | None]:
     """(reason text, family, matched phrase). Title text is never used."""
     low = _flat(text).lower()
@@ -263,12 +350,24 @@ def extract_announcement(text: str, kode: str, announced: str | None,
     if is_unsuspension(text):
         return Extraction('UNSUSPENSION', detail='first clause opens a suspension')
 
+    symbol_for_table = f'{kode}.JK'
+    table_date, table_reason, table_evidence = (None, None, None) if multi else table_row(
+        text, symbol_for_table)
+
     raw_date, evidence, kind = parse_effective_date(text, announced, None)
     if kind == 'unresolved' and next_session:
         # mid-session halt: the first fully halted session is the next one
         date, kind = next_session(raw_date), 'mid_session'
     else:
         date = raw_date
+    if not date and table_date:
+        # Tabular general-feed notice: the table states the start date and the cause.
+        reason = table_reason or 'Penghentian sementara perdagangan Efek (pengumuman Bursa)'
+        return Extraction('OK_START',
+                          [Row(symbol_for_table, table_date, reason, 'table', table_evidence,
+                               table_date)],
+                          table_evidence, 'table')
+
     if not date:
         # A date-less mass list still names the companies it halts. Carry the tickers
         # so the ledger can show them; the date stays unset rather than guessed.

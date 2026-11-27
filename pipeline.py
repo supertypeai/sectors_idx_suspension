@@ -3,7 +3,8 @@ from datetime import datetime, timedelta
 
 from setup                                  import LOGGER, SUPABASE_KEY, SUPABASE_URL
 from scraper_engine.api_requester           import APIRequester
-from scraper_engine.idx_suspension_scraper  import run_get_idx_suspension, write_quarantine
+from scraper_engine.idx_suspension_scraper  import (run_general_suspensions,
+                                                  run_get_idx_suspension, write_quarantine)
 from scraper_engine.l4                      import apply_l4, existing_keys, public_rows
 from scraper_engine.sessions                import load_sessions, next_session_factory
 
@@ -99,10 +100,22 @@ if __name__ == '__main__':
     df_payload = run_get_idx_suspension(allowed_symbols, requester,
                                         next_session=next_session_factory(sessions))
 
+    # The suspension endpoint carries only part of IDX's notices; the rest (tabular ones)
+    # are filed as ordinary announcements. Both legs feed one gate and one upsert.
+    general_rows, general_unreadable = run_general_suspensions(
+        allowed_symbols, requester, args.start_date, args.end_date,
+        next_session=next_session_factory(sessions))
+    LOGGER.info(f"general announcement feed: {len(general_rows)} halt row(s), "
+                f"{len(general_unreadable)} not read")
+
+    attrs = getattr(df_payload, 'attrs', {})
+    records = [] if isinstance(df_payload, list) else df_payload.to_dict(orient="records")
+    records.extend(general_rows)
+    unreadable = list(attrs.get('unreadable') or []) + general_unreadable
+
     # Filter continuation notices here as well: a daily run must not upsert a
     # "still suspended" announcement as if the halt started that day.
-    if not isinstance(df_payload, list) and not df_payload.empty:
-        records = df_payload.to_dict(orient="records")
+    if records:
         symbols = sorted({row['symbol'] for row in records})
         late: list[dict] = []
         kept = apply_l4(records, existing_keys(supabase_client, symbols),
@@ -110,12 +123,13 @@ if __name__ == '__main__':
         write_quarantine(late)
         LOGGER.info(f"L4 gate kept {len(kept)} of {len(records)} parsed row(s)")
         df_payload = pd.DataFrame(kept)
+    else:
+        df_payload = pd.DataFrame()
 
     upsert_to_db(df_payload, supabase_client)
 
     # A partial fetch must not pass as a clean run: the CI job has to go red so the
     # missing days get noticed and re-scraped.
-    attrs = getattr(df_payload, 'attrs', {})
     failures = attrs.get('failures') or []
     if failures:
         LOGGER.error(f"Run finished with {len(failures)} unprocessed announcement(s); exiting non-zero")
@@ -123,9 +137,8 @@ if __name__ == '__main__':
 
     # An unreadable mass list hides an unknown number of halts, so it fails the run
     # instead of leaving a note in the ledger nobody reads.
-    unreadable = attrs.get('unreadable') or []
     if unreadable:
-        LOGGER.error(f"{len(unreadable)} mass list(s) still unreadable after parsing: "
+        LOGGER.error(f"{len(unreadable)} notice(s) still unreadable after parsing: "
                      f"{[u['kode'] for u in unreadable]}; exiting non-zero")
         raise SystemExit(1)
 

@@ -1,4 +1,7 @@
+import json
+import time
 from io         import BytesIO
+
 from bs4        import BeautifulSoup
 
 from setup import PROXY, LOGGER
@@ -6,10 +9,14 @@ from idx_fetch import idx_get, _looks_right
 
 import pandas as pd 
 import fitz 
-import time
 
 
 class APIRequester:
+    # The general announcement feed has no date range: it is searched by keyword and
+    # paged, so callers filter the returned PublishDate themselves.
+    ANNOUNCEMENT_KEYWORDS = ('Suspensi', 'Penghentian Sementara')
+    ANNOUNCEMENT_PAGE = 1000
+
     def __init__(self, start_date: str, end_date: str, proxy=PROXY, session=None):
         """
         Initializes the ProxyRequester class with the provided proxy
@@ -28,6 +35,42 @@ class APIRequester:
         self.root_url ='https://www.idx.co.id'
         self.api_url = f"https://www.idx.co.id/primary/NewsAnnouncement/GetSuspension?indexFrom=1&dateFrom={start_date}&dateTo={end_date}&pageSize=9999&lang=en&type=spt"
         self.api_url_suspend_more_six_month = "https://www.idx.co.id/id/perusahaan-tercatat/suspensi-6-bulan/"
+
+    def fetch_general_suspensions(self, retries: int = 3) -> list[dict]:
+        """Suspension items from the general announcement feed (impositions + reliefs).
+
+        The suspension endpoint only carries a subset of them; IDX also files suspensions
+        as ordinary announcements, which is the source for the tabular notices.
+        """
+        items: dict[str, dict] = {}
+        for keyword in self.ANNOUNCEMENT_KEYWORDS:
+            page, pages = 1, 1
+            while page <= pages:
+                url = ("https://www.idx.co.id/primary/NewsAnnouncement/GetAllAnnouncement"
+                       f"?keywords={keyword}&pageNumber={page}&pageSize={self.ANNOUNCEMENT_PAGE}"
+                       "&lang=id")
+                last_error = None
+                for attempt in range(1, retries + 1):
+                    try:
+                        if self.session is not None:
+                            body = self._browser_get(url, kind="json")
+                        else:
+                            body = idx_get(url, kind="json", proxies=self.proxies)
+                        payload = json.loads(body)
+                        pages = int(payload.get('PageCount') or 1)
+                        for item in payload.get('Items') or []:
+                            items[item.get('AnnouncementNo') or item.get('Id')] = item
+                        break
+                    except Exception as error:
+                        last_error = error
+                        LOGGER.error(f"announcement feed attempt {attempt}/{retries} failed: {error}")
+                        if attempt < retries:
+                            time.sleep(attempt * 5)
+                else:
+                    # Both keys are needed downstream: a half-read feed would hide halts.
+                    raise RuntimeError(f"announcement feed unavailable: {last_error}")
+                page += 1
+        return list(items.values())
 
     def _browser_get(self, url: str, kind: str) -> bytes:
         """One GET through the cleared browser session; the body shape is the status."""
@@ -76,7 +119,8 @@ class APIRequester:
             fitz.Document: The PDF document object containing the content of the PDF file.
         """
         pdf_url = pdf_url.strip()
-        full_url = self.root_url + pdf_url
+        # The general announcement feed hands out absolute URLs; this endpoint relative.
+        full_url = pdf_url if pdf_url.startswith('http') else self.root_url + pdf_url
 
         try:
             file_content = (self._browser_get(full_url, kind="raw") if self.session is not None
